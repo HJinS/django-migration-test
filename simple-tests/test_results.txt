@@ -1,0 +1,9 @@
+--- 💾 compare memory usage ---
+total count: 1,000,000
+List memory usage: 8,448,728 bytes
+Set  memory usage: 33,554,648 bytes
+--- ⏱️ Iteration Time Compare ---497
+Total iteration count: 100
+List iteration time: 185.348972 s
+Set  iteration time: 201.449253 s
+
