@@ -128,11 +128,17 @@ class DatabaseCreation(BaseDatabaseCreation):
         return tuple(sig)
 
     def setup_worker_connection(self, _worker_id):
+        from pprint import pprint
+        # print("============================setup_worker_connection=======================")
         settings_dict = self.get_test_db_clone_settings(_worker_id)
+        print("setup_worker_connection", self.connection.alias)
+        pprint(settings_dict, indent=2)
         # connection.settings_dict must be updated in place for changes to be
         # reflected in django.db.connections. Otherwise new threads would
         # connect to the default database instead of the appropriate clone.
         start_method = multiprocessing.get_start_method()
+        # print(settings_dict)
+        # print(_worker_id)
         if start_method == "fork":
             # Update settings_dict in place.
             self.connection.settings_dict.update(settings_dict)
@@ -142,9 +148,14 @@ class DatabaseCreation(BaseDatabaseCreation):
             connection_str = (
                 f"file:memorydb_{alias}_{_worker_id}?mode=memory&cache=shared"
             )
+            # print(connection_str)
+            # print(alias)
             source_db = self.connection.Database.connect(
                 f"file:{alias}_{_worker_id}.sqlite3?mode=ro", uri=True
             )
+            # print(source_db)
+
+
             target_db = sqlite3.connect(connection_str, uri=True)
             source_db.backup(target_db)
             source_db.close()

@@ -219,6 +219,13 @@ def setup_databases(
                                 verbosity=verbosity,
                                 keepdb=keepdb,
                             )
+                if kwargs.get("name") == "iso_builder":
+                    with time_keeper.timed("  Cloning '%s'" % alias):
+                        connection.creation.clone_test_db(
+                            suffix="1",
+                            verbosity=verbosity,
+                            keepdb=keepdb,
+                        )
             # Configure all other connections as mirrors of the first one
             else:
                 connections[alias].creation.set_as_test_mirror(
@@ -368,6 +375,7 @@ def get_unique_databases_and_mirrors(aliases=None):
 
 
 def teardown_databases(old_config, verbosity, parallel=0, keepdb=False):
+    print("teardown_databases")
     """Destroy all the non-mirror databases."""
     for connection, old_name, destroy in old_config:
         if destroy:
@@ -981,6 +989,17 @@ def tag(*tags):
             obj.tags = obj.tags.union(tags)
         else:
             setattr(obj, "tags", set(tags))
+        return obj
+
+    return decorator
+
+
+def env(**envs):
+
+    def decorator(obj):
+        if not hasattr(obj, "env"):
+            obj._envs = {}
+        obj._envs.update(envs)
         return obj
 
     return decorator
