@@ -1234,7 +1234,6 @@ class DiscoverRunner:
         return suite
 
     def build_isolated_suite(self, test_labels=None, **kwargs):
-        self.log(f"{self.__class__.__name__}: Building suite2")
         test_labels = test_labels or ["."]
 
         discover_kwargs = {}
