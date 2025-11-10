@@ -492,7 +492,7 @@ def _run_subsuite(args):
     return subsuite_index, result.events
 
 
-def _init_and_run_subsuite(
+def _init_and_run_suite(
     failfast,
     buffer,
     debug_mode,
@@ -504,6 +504,9 @@ def _init_and_run_subsuite(
     initial_settings=None,
 
 ):
+    """
+    Concatenation of _init_worker, _run_subsuite to run tests using Process.
+    """
     _worker_id = 1
 
     is_spawn_or_forkserver = multiprocessing.get_start_method() in {
@@ -669,9 +672,9 @@ class ParallelTestSuite(unittest.TestSuite):
             }
 
 
-class TempTestSuite(ParallelTestSuite):
+class ParallelIsolatedTestSuite(ParallelTestSuite):
     """
-    Run a series of tests in parallel in several processes.
+    Run a series of tests in parallel in several processes with isolated python envs.
 
     While the unittest module's documentation implies that orchestrating the
     execution of tests is the responsibility of the test runner, in practice,
@@ -711,18 +714,8 @@ class TempTestSuite(ParallelTestSuite):
 
     def run(self, result):
         """
-        Distribute TestCases across workers.
-
-        Return an identifier of each TestCase with its result in order to use
-        imap_unordered to show results as soon as they're available.
-
-        To minimize pickling errors when getting results from workers:
-
-        - pass back numeric indexes in self.subsuites instead of tests
-        - make tracebacks picklable with tblib, if available
-
-        Even with tblib, errors may still occur for dynamically created
-        exception classes which cannot be unpickled.
+        Set environment variables before test-runs.
+        Please see `ParallelTestSuite`:
         """
 
         initial_environ = os.environ.copy()
@@ -734,9 +727,23 @@ class TempTestSuite(ParallelTestSuite):
         return result
 
 
-class TempTestSuite2(unittest.TestSuite):
+class IsolatedTestSuite(unittest.TestSuite):
+    """
+    Run a series of tests in sequential with isolated python envs.
+
+    While the unittest module's documentation implies that orchestrating the
+    execution of tests is the responsibility of the test runner, in practice,
+    it appears that TestRunner classes are more concerned with formatting and
+    displaying test results.
+
+    Since there are fewer use cases for customizing TestSuite than TestRunner,
+    implementing parallelization at the level of the TestSuite improves
+    interoperability with existing custom test runners. A single instance of a
+    test runner can still collect results from all tests without being aware
+    that they have been run in parallel.
+    """
     # In case someone wants to modify these in a subclass.
-    init_and_run = _init_and_run_subsuite
+    init_and_run = _init_and_run_suite
     runner_class = RemoteTestRunner
 
     def __init__(
@@ -903,8 +910,8 @@ class DiscoverRunner:
 
     test_suite = unittest.TestSuite
     parallel_test_suite = ParallelTestSuite
-    independent_test_suite = TempTestSuite2
-    parallel_independent_test_suit = TempTestSuite
+    iso_test_suite = IsolatedTestSuite
+    parallel_iso_test_suit = ParallelIsolatedTestSuite
     test_runner = unittest.TextTestRunner
     test_loader = unittest.defaultTestLoader
     reorder_by = (TestCase, SimpleTestCase)
@@ -1178,8 +1185,7 @@ class DiscoverRunner:
         for label in test_labels:
             tests = self.load_tests_for_label(label, discover_kwargs)
             all_tests.extend(iter_test_cases(tests))
-        test2 = filter_tests_by_python_envs(all_tests)
-        all_tests = list(set(all_tests) - set(test2))
+        all_tests = exclude_tests_by_python_envs(all_tests)
 
         if self.tags or self.exclude_tags:
             if self.tags:
@@ -1227,7 +1233,7 @@ class DiscoverRunner:
                 )
         return suite
 
-    def build_suite2(self, test_labels=None, **kwargs):
+    def build_isolated_suite(self, test_labels=None, **kwargs):
         self.log(f"{self.__class__.__name__}: Building suite2")
         test_labels = test_labels or ["."]
 
@@ -1271,7 +1277,7 @@ class DiscoverRunner:
         )
         self.log("Found %d test(s)." % len(all_tests))
         envs = extract_envs_from_tests(all_tests)
-        suite = self.independent_test_suite(
+        suite = self.iso_test_suite(
             self.test_suite(all_tests),
             all_tests,
             failfast=False,
@@ -1287,7 +1293,7 @@ class DiscoverRunner:
         # of test databases.
         self.parallel = processes
         if processes > 1:
-            suite = self.parallel_independent_test_suit(
+            suite = self.parallel_iso_test_suit(
                 subsuites,
                 processes,
                 self.failfast,
@@ -1346,6 +1352,7 @@ class DiscoverRunner:
             verbosity=self.verbosity,
             parallel=self.parallel,
             keepdb=self.keepdb,
+            kwargs=kwargs,
         )
 
     def teardown_test_environment(self, **kwargs):
@@ -1391,12 +1398,12 @@ class DiscoverRunner:
 
         Return the number of tests that failed.
         """
-        self.log(f"{self.__class__.__name__}: Running tests")
         suite_builders = {
-            "iso_builder": self.build_suite2,
+            "iso_builder": self.build_isolated_suite,
             "normal_builder": self.build_suite
         }
         results = 0
+        initial_parallel = self.parallel
         for name, builder in suite_builders.items():
             self.setup_test_environment()
             suite = builder(test_labels)
@@ -1421,7 +1428,7 @@ class DiscoverRunner:
             finally:
                 try:
                     with self.time_keeper.timed("Total database teardown"):
-                        self.teardown_databases(old_config)
+                        self.teardown_databases(old_config, name=name)
                     self.teardown_test_environment()
                 except Exception:
                     # Silence teardown exceptions if an exception was raised during
@@ -1429,7 +1436,8 @@ class DiscoverRunner:
                     if not run_failed:
                         raise
             results += self.suite_result(suite, result)
-        self.time_keeper.print_results()
+            self.time_keeper.print_results()
+            self.parallel = initial_parallel
         return results
 
 
@@ -1596,8 +1604,10 @@ def filter_tests_by_tags(tests, tags, exclude_tags):
 
 
 def filter_tests_by_python_envs(tests):
-    return [test for test in tests if test_extract_python_envs(test)]
+    return (test for test in tests if test_extract_python_envs(test))
 
+def exclude_tests_by_python_envs(tests):
+    return (test for test in tests if not test_extract_python_envs(test))
 
 def extract_envs_from_tests(tests):
     envs = {}

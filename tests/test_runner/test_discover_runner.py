@@ -455,6 +455,7 @@ class DiscoverRunnerTests(SimpleTestCase):
                 # The ids have the form "unittest.loader._FailedTest.label1".
                 names = [test.id().split(".")[-1] for test in tests]
                 self.assertEqual(names, expected)
+                self.assertEqual(names, expected)
 
     def test_overridable_get_test_runner_kwargs(self):
         self.assertIsInstance(DiscoverRunner().get_test_runner_kwargs(), dict)
