@@ -219,6 +219,13 @@ def setup_databases(
                                 verbosity=verbosity,
                                 keepdb=keepdb,
                             )
+                if kwargs.get("name") == "iso_builder":
+                    with time_keeper.timed("  Cloning '%s'" % alias):
+                        connection.creation.clone_test_db(
+                            suffix="1",
+                            verbosity=verbosity,
+                            keepdb=keepdb,
+                        )
             # Configure all other connections as mirrors of the first one
             else:
                 connections[alias].creation.set_as_test_mirror(
@@ -981,6 +988,17 @@ def tag(*tags):
             obj.tags = obj.tags.union(tags)
         else:
             setattr(obj, "tags", set(tags))
+        return obj
+
+    return decorator
+
+
+def env(**envs):
+
+    def decorator(obj):
+        if not hasattr(obj, "env"):
+            obj._envs = {}
+        obj._envs.update(envs)
         return obj
 
     return decorator
