@@ -675,17 +675,6 @@ class ParallelTestSuite(unittest.TestSuite):
 class ParallelIsolatedTestSuite(ParallelTestSuite):
     """
     Run a series of tests in parallel in several processes with isolated python envs.
-
-    While the unittest module's documentation implies that orchestrating the
-    execution of tests is the responsibility of the test runner, in practice,
-    it appears that TestRunner classes are more concerned with formatting and
-    displaying test results.
-
-    Since there are fewer use cases for customizing TestSuite than TestRunner,
-    implementing parallelization at the level of the TestSuite improves
-    interoperability with existing custom test runners. A single instance of a
-    test runner can still collect results from all tests without being aware
-    that they have been run in parallel.
     """
     # In case someone wants to modify these in a subclass.
     init_worker = _init_worker
@@ -730,17 +719,6 @@ class ParallelIsolatedTestSuite(ParallelTestSuite):
 class IsolatedTestSuite(unittest.TestSuite):
     """
     Run a series of tests in sequential with isolated python envs.
-
-    While the unittest module's documentation implies that orchestrating the
-    execution of tests is the responsibility of the test runner, in practice,
-    it appears that TestRunner classes are more concerned with formatting and
-    displaying test results.
-
-    Since there are fewer use cases for customizing TestSuite than TestRunner,
-    implementing parallelization at the level of the TestSuite improves
-    interoperability with existing custom test runners. A single instance of a
-    test runner can still collect results from all tests without being aware
-    that they have been run in parallel.
     """
     # In case someone wants to modify these in a subclass.
     init_and_run = _init_and_run_suite
@@ -1171,9 +1149,8 @@ class DiscoverRunner:
         self.test_loader._top_level_dir = None
         return tests
 
-    def build_suite(self, test_labels=None, **kwargs):
+    def _get_tests(self, test_labels=None, test_filter=None):
         test_labels = test_labels or ["."]
-
         discover_kwargs = {}
         if self.pattern is not None:
             discover_kwargs["pattern"] = self.pattern
@@ -1185,7 +1162,9 @@ class DiscoverRunner:
         for label in test_labels:
             tests = self.load_tests_for_label(label, discover_kwargs)
             all_tests.extend(iter_test_cases(tests))
-        all_tests = exclude_tests_by_python_envs(all_tests)
+
+        if test_filter:
+            all_tests = test_filter(all_tests)
 
         if self.tags or self.exclude_tags:
             if self.tags:
@@ -1213,6 +1192,10 @@ class DiscoverRunner:
             )
         )
         self.log("Found %d test(s)." % len(all_tests))
+        return all_tests
+
+    def build_suite(self, test_labels=None, **kwargs):
+        all_tests = self._get_tests(test_labels, exclude_tests_by_python_envs)
         suite = self.test_suite(all_tests)
 
         if self.parallel > 1:
@@ -1233,48 +1216,8 @@ class DiscoverRunner:
                 )
         return suite
 
-    def build_isolated_suite(self, test_labels=None, **kwargs):
-        test_labels = test_labels or ["."]
-
-        discover_kwargs = {}
-        if self.pattern is not None:
-            discover_kwargs["pattern"] = self.pattern
-        if self.top_level is not None:
-            discover_kwargs["top_level_dir"] = self.top_level
-        self.setup_shuffler()
-
-        all_tests = []
-        for label in test_labels:
-            tests = self.load_tests_for_label(label, discover_kwargs)
-            all_tests.extend(iter_test_cases(tests))
-        all_tests = filter_tests_by_python_envs(all_tests)
-
-        if self.tags or self.exclude_tags:
-            if self.tags:
-                self.log(
-                    "Including test tag(s): %s." % ", ".join(sorted(self.tags)),
-                    level=logging.DEBUG,
-                )
-            if self.exclude_tags:
-                self.log(
-                    "Excluding test tag(s): %s." % ", ".join(sorted(self.exclude_tags)),
-                    level=logging.DEBUG,
-                )
-            all_tests = filter_tests_by_tags(all_tests, self.tags, self.exclude_tags)
-
-        # Put the failures detected at load time first for quicker feedback.
-        # _FailedTest objects include things like test modules that couldn't be
-        # found or that couldn't be loaded due to syntax errors.
-        test_types = (unittest.loader._FailedTest, *self.reorder_by)
-        all_tests = list(
-            reorder_tests(
-                all_tests,
-                test_types,
-                shuffler=self._shuffler,
-                reverse=self.reverse,
-            )
-        )
-        self.log("Found %d test(s)." % len(all_tests))
+    def build_suite_isolated(self, test_labels, **kwargs):
+        all_tests = self._get_tests(test_labels, filter_tests_by_python_envs)
         envs = extract_envs_from_tests(all_tests)
         suite = self.iso_test_suite(
             self.test_suite(all_tests),
@@ -1398,7 +1341,7 @@ class DiscoverRunner:
         Return the number of tests that failed.
         """
         suite_builders = {
-            "iso_builder": self.build_isolated_suite,
+            "iso_builder": self.build_suite_isolated,
             "normal_builder": self.build_suite
         }
         results = 0
