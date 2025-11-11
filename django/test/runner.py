@@ -1341,8 +1341,8 @@ class DiscoverRunner:
         Return the number of tests that failed.
         """
         suite_builders = {
-            "iso_builder": self.build_suite_isolated,
-            "normal_builder": self.build_suite
+            "normal_builder": self.build_suite,
+            "iso_builder": self.build_suite_isolated
         }
         results = 0
         initial_parallel = self.parallel
