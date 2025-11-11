@@ -219,7 +219,7 @@ def setup_databases(
                                 verbosity=verbosity,
                                 keepdb=keepdb,
                             )
-                if kwargs.get("name") == "iso_builder":
+                elif kwargs.get("name") == "iso_builder":
                     with time_keeper.timed("  Cloning '%s'" % alias):
                         connection.creation.clone_test_db(
                             suffix="1",
@@ -374,8 +374,7 @@ def get_unique_databases_and_mirrors(aliases=None):
     return test_databases, mirrored_aliases
 
 
-def teardown_databases(old_config, verbosity, parallel=0, keepdb=False):
-    print("teardown_databases")
+def teardown_databases(old_config, verbosity, parallel=0, keepdb=False, **kwargs):
     """Destroy all the non-mirror databases."""
     for connection, old_name, destroy in old_config:
         if destroy:
@@ -386,6 +385,12 @@ def teardown_databases(old_config, verbosity, parallel=0, keepdb=False):
                         verbosity=verbosity,
                         keepdb=keepdb,
                     )
+            elif kwargs.get("name") == "iso_builder":
+                connection.creation.destroy_test_db(
+                    suffix=1,
+                    verbosity=verbosity,
+                    keepdb=keepdb,
+                )
             connection.creation.destroy_test_db(old_name, verbosity, keepdb)
 
 

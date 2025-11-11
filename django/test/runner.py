@@ -8,6 +8,7 @@ import logging
 import multiprocessing
 import os
 import pickle
+import queue
 import random
 import sys
 import textwrap
@@ -491,8 +492,7 @@ def _run_subsuite(args):
     return subsuite_index, result.events
 
 
-def _init_and_run_subsuite(
-    counter,
+def _init_and_run_suite(
     failfast,
     buffer,
     debug_mode,
@@ -504,7 +504,9 @@ def _init_and_run_subsuite(
     initial_settings=None,
 
 ):
-    # from pprint import pprint
+    """
+    Concatenation of _init_worker, _run_subsuite to run tests using Process.
+    """
     _worker_id = 1
 
     is_spawn_or_forkserver = multiprocessing.get_start_method() in {
@@ -528,9 +530,7 @@ def _init_and_run_subsuite(
             connection.settings_dict.update(initial_settings[alias])
             if value := serialized_contents.get(alias):
                 connection._test_serialized_contents = value
-        print(connection.settings_dict, alias)
         connection.creation.setup_worker_connection(_worker_id)
-
     runner = runner_class(failfast=failfast, buffer=buffer)
     result = runner.run(suite)
     result_queue.put(result.events)
@@ -661,10 +661,6 @@ class ParallelTestSuite(unittest.TestSuite):
         return iter(self.subsuites)
 
     def initialize_suite(self):
-        # from pprint import pprint
-        # print("============================initialize_suite===================================")
-        # print(f"{self.__class__.__name__} connections: {connections}")
-        # print(f"{self.__class__.__name__} start method: {multiprocessing.get_start_method()}")
         if multiprocessing.get_start_method() in {"forkserver", "spawn"}:
             self.initial_settings = {
                 alias: connections[alias].settings_dict for alias in connections
@@ -674,24 +670,11 @@ class ParallelTestSuite(unittest.TestSuite):
                 for alias in connections
                 if alias in self.serialized_aliases
             }
-            # pprint(self.initial_settings, indent=2)
-            # pprint(self.serialized_contents, indent=2)
 
 
-class TempTestSuite(ParallelTestSuite):
+class ParallelIsolatedTestSuite(ParallelTestSuite):
     """
-    Run a series of tests in parallel in several processes.
-
-    While the unittest module's documentation implies that orchestrating the
-    execution of tests is the responsibility of the test runner, in practice,
-    it appears that TestRunner classes are more concerned with formatting and
-    displaying test results.
-
-    Since there are fewer use cases for customizing TestSuite than TestRunner,
-    implementing parallelization at the level of the TestSuite improves
-    interoperability with existing custom test runners. A single instance of a
-    test runner can still collect results from all tests without being aware
-    that they have been run in parallel.
+    Run a series of tests in parallel in several processes with isolated python envs.
     """
     # In case someone wants to modify these in a subclass.
     init_worker = _init_worker
@@ -720,18 +703,8 @@ class TempTestSuite(ParallelTestSuite):
 
     def run(self, result):
         """
-        Distribute TestCases across workers.
-
-        Return an identifier of each TestCase with its result in order to use
-        imap_unordered to show results as soon as they're available.
-
-        To minimize pickling errors when getting results from workers:
-
-        - pass back numeric indexes in self.subsuites instead of tests
-        - make tracebacks picklable with tblib, if available
-
-        Even with tblib, errors may still occur for dynamically created
-        exception classes which cannot be unpickled.
+        Set environment variables before test-runs.
+        Please see `ParallelTestSuite`:
         """
 
         initial_environ = os.environ.copy()
@@ -743,9 +716,12 @@ class TempTestSuite(ParallelTestSuite):
         return result
 
 
-class TempTestSuite2(unittest.TestSuite):
+class IsolatedTestSuite(unittest.TestSuite):
+    """
+    Run a series of tests in sequential with isolated python envs.
+    """
     # In case someone wants to modify these in a subclass.
-    init_and_run = _init_and_run_subsuite
+    init_and_run = _init_and_run_suite
     runner_class = RemoteTestRunner
 
     def __init__(
@@ -768,11 +744,13 @@ class TempTestSuite2(unittest.TestSuite):
         self._tests = tests
 
     def run(self, result):
-        counter = multiprocessing.Value(ctypes.c_int, 0)
+        initial_environ = os.environ.copy()
+        if self.python_envs:
+            for key, value in self.python_envs.items():
+                os.environ[key] = value
         self.initialize_suite()
         _shared_results = multiprocessing.Queue()
         args = [
-            counter,
             self.failfast,
             self.buffer,
             self.debug_mode,
@@ -791,8 +769,7 @@ class TempTestSuite2(unittest.TestSuite):
         # Don't buffer in the main process to avoid error propagation issues.
         result.buffer = False
         process.start()
-        process.join()
-        while not _shared_results.empty():
+        while True:
             if result.shouldStop:
                 process.terminate()
                 break
@@ -803,15 +780,18 @@ class TempTestSuite2(unittest.TestSuite):
             except StopIteration:
                 process.close()
                 break
+            except queue.Empty:
+                break
 
-            test = self.suite
+            tests = list(self.suite)
             for event in events:
-                self.handle_event(result, test, event)
+                self.handle_event(result, tests, event)
 
-        breakpoint()
+        process.join()
+        os.environ = initial_environ
         return result
 
-    def handle_event(self, result, test, event):
+    def handle_event(self, result, tests, event):
         event_name = event[0]
         handler = getattr(result, event_name, None)
         if handler is None:
@@ -827,6 +807,7 @@ class TempTestSuite2(unittest.TestSuite):
             test = unittest.suite._ErrorHolder(test_id)
             args = event[3:]
         else:
+            test = tests[test_index]
             args = event[2:]
         handler(test, *args)
 
@@ -907,8 +888,8 @@ class DiscoverRunner:
 
     test_suite = unittest.TestSuite
     parallel_test_suite = ParallelTestSuite
-    independent_test_suite = TempTestSuite2
-    parallel_independent_test_suit = TempTestSuite
+    iso_test_suite = IsolatedTestSuite
+    parallel_iso_test_suit = ParallelIsolatedTestSuite
     test_runner = unittest.TextTestRunner
     test_loader = unittest.defaultTestLoader
     reorder_by = (TestCase, SimpleTestCase)
@@ -1168,10 +1149,8 @@ class DiscoverRunner:
         self.test_loader._top_level_dir = None
         return tests
 
-    def build_suite(self, test_labels=None, **kwargs):
-        # self.log(f"{self.__class__.__name__}: Building suite")
+    def _get_tests(self, test_labels=None, test_filter=None):
         test_labels = test_labels or ["."]
-
         discover_kwargs = {}
         if self.pattern is not None:
             discover_kwargs["pattern"] = self.pattern
@@ -1183,8 +1162,9 @@ class DiscoverRunner:
         for label in test_labels:
             tests = self.load_tests_for_label(label, discover_kwargs)
             all_tests.extend(iter_test_cases(tests))
-        test2 = filter_tests_by_python_envs(all_tests)
-        all_tests = list(set(all_tests) - set(test2))
+
+        if test_filter:
+            all_tests = test_filter(all_tests)
 
         if self.tags or self.exclude_tags:
             if self.tags:
@@ -1212,6 +1192,10 @@ class DiscoverRunner:
             )
         )
         self.log("Found %d test(s)." % len(all_tests))
+        return all_tests
+
+    def build_suite(self, test_labels=None, **kwargs):
+        all_tests = self._get_tests(test_labels, exclude_tests_by_python_envs)
         suite = self.test_suite(all_tests)
 
         if self.parallel > 1:
@@ -1232,51 +1216,10 @@ class DiscoverRunner:
                 )
         return suite
 
-    def build_suite2(self, test_labels=None, **kwargs):
-        self.log(f"{self.__class__.__name__}: Building suite2")
-        test_labels = test_labels or ["."]
-
-        discover_kwargs = {}
-        if self.pattern is not None:
-            discover_kwargs["pattern"] = self.pattern
-        if self.top_level is not None:
-            discover_kwargs["top_level_dir"] = self.top_level
-        self.setup_shuffler()
-
-        all_tests = []
-        for label in test_labels:
-            tests = self.load_tests_for_label(label, discover_kwargs)
-            all_tests.extend(iter_test_cases(tests))
-        all_tests = filter_tests_by_python_envs(all_tests)
-
-        if self.tags or self.exclude_tags:
-            if self.tags:
-                self.log(
-                    "Including test tag(s): %s." % ", ".join(sorted(self.tags)),
-                    level=logging.DEBUG,
-                )
-            if self.exclude_tags:
-                self.log(
-                    "Excluding test tag(s): %s." % ", ".join(sorted(self.exclude_tags)),
-                    level=logging.DEBUG,
-                )
-            all_tests = filter_tests_by_tags(all_tests, self.tags, self.exclude_tags)
-
-        # Put the failures detected at load time first for quicker feedback.
-        # _FailedTest objects include things like test modules that couldn't be
-        # found or that couldn't be loaded due to syntax errors.
-        test_types = (unittest.loader._FailedTest, *self.reorder_by)
-        all_tests = list(
-            reorder_tests(
-                all_tests,
-                test_types,
-                shuffler=self._shuffler,
-                reverse=self.reverse,
-            )
-        )
-        self.log("Found %d test(s)." % len(all_tests))
+    def build_suite_isolated(self, test_labels=None, **kwargs):
+        all_tests = self._get_tests(test_labels, filter_tests_by_python_envs)
         envs = extract_envs_from_tests(all_tests)
-        suite = self.independent_test_suite(
+        suite = self.iso_test_suite(
             self.test_suite(all_tests),
             all_tests,
             failfast=False,
@@ -1292,7 +1235,7 @@ class DiscoverRunner:
         # of test databases.
         self.parallel = processes
         if processes > 1:
-            suite = self.parallel_independent_test_suit(
+            suite = self.parallel_iso_test_suit(
                 subsuites,
                 processes,
                 self.failfast,
@@ -1335,12 +1278,8 @@ class DiscoverRunner:
         call_command("check", verbosity=self.verbosity, databases=databases)
 
     def run_suite(self, suite, **kwargs):
-        # self.log(f"{self.__class__.__name__}: Running suite")
-        # self.log(f"{self.__class__.__name__}: kwargs: {kwargs}")
         kwargs = self.get_test_runner_kwargs()
-        # self.log(f"{self.__class__.__name__}: runner: {self.test_runner}")
         runner = self.test_runner(**kwargs)
-        # self.log(f"{self.__class__.__name__}: runnerInit: {runner}")
         try:
             return runner.run(suite)
         finally:
@@ -1355,6 +1294,7 @@ class DiscoverRunner:
             verbosity=self.verbosity,
             parallel=self.parallel,
             keepdb=self.keepdb,
+            kwargs=kwargs,
         )
 
     def teardown_test_environment(self, **kwargs):
@@ -1382,9 +1322,7 @@ class DiscoverRunner:
 
     def get_databases(self, suite):
         databases = self._get_databases(suite)
-        print(databases)
         unused_databases = [alias for alias in connections if alias not in databases]
-        print(unused_databases)
         if unused_databases:
             self.log(
                 "Skipping setup of unused database(s): %s."
@@ -1402,12 +1340,12 @@ class DiscoverRunner:
 
         Return the number of tests that failed.
         """
-        self.log(f"{self.__class__.__name__}: Running tests")
         suite_builders = {
-            "iso_builder": self.build_suite2,
-            "normal_builder": self.build_suite
+            "normal_builder": self.build_suite,
+            "iso_builder": self.build_suite_isolated
         }
         results = 0
+        initial_parallel = self.parallel
         for name, builder in suite_builders.items():
             self.setup_test_environment()
             suite = builder(test_labels)
@@ -1422,7 +1360,6 @@ class DiscoverRunner:
                     serialized_aliases=suite.serialized_aliases,
                     name=name
                 )
-                print("setup databases", old_config, databases)
             run_failed = False
             try:
                 self.run_checks(databases)
@@ -1433,7 +1370,7 @@ class DiscoverRunner:
             finally:
                 try:
                     with self.time_keeper.timed("Total database teardown"):
-                        self.teardown_databases(old_config)
+                        self.teardown_databases(old_config, name=name)
                     self.teardown_test_environment()
                 except Exception:
                     # Silence teardown exceptions if an exception was raised during
@@ -1441,7 +1378,8 @@ class DiscoverRunner:
                     if not run_failed:
                         raise
             results += self.suite_result(suite, result)
-        self.time_keeper.print_results()
+            self.time_keeper.print_results()
+            self.parallel = initial_parallel
         return results
 
 
@@ -1608,8 +1546,10 @@ def filter_tests_by_tags(tests, tags, exclude_tags):
 
 
 def filter_tests_by_python_envs(tests):
-    return [test for test in tests if test_extract_python_envs(test)]
+    return (test for test in tests if test_extract_python_envs(test))
 
+def exclude_tests_by_python_envs(tests):
+    return (test for test in tests if not test_extract_python_envs(test))
 
 def extract_envs_from_tests(tests):
     envs = {}
