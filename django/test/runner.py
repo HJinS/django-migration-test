@@ -744,6 +744,8 @@ class IsolatedTestSuite(unittest.TestSuite):
         self._tests = tests
 
     def run(self, result):
+        if not self._tests:
+            return result
         initial_environ = os.environ.copy()
         if self.python_envs:
             for key, value in self.python_envs.items():
