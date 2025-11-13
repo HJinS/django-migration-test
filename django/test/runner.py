@@ -1296,7 +1296,7 @@ class DiscoverRunner:
             verbosity=self.verbosity,
             parallel=self.parallel,
             keepdb=self.keepdb,
-            kwargs=kwargs,
+            **kwargs,
         )
 
     def teardown_test_environment(self, **kwargs):
