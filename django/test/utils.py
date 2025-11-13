@@ -391,8 +391,7 @@ def teardown_databases(old_config, verbosity, parallel=0, keepdb=False, **kwargs
                     verbosity=verbosity,
                     keepdb=keepdb,
                 )
-            else:
-                connection.creation.destroy_test_db(old_name, verbosity, keepdb)
+            connection.creation.destroy_test_db(old_name, verbosity, keepdb)
 
 
 def get_runner(settings, test_runner_class=None):
