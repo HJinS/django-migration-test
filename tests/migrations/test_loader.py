@@ -1,4 +1,5 @@
 import compileall
+import multiprocessing
 import os
 from importlib import import_module
 

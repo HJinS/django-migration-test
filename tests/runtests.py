@@ -404,6 +404,8 @@ def django_tests(
     TestRunner = get_runner(settings)
     TestRunner.parallel_test_suite.process_setup = setup_run_tests
     TestRunner.parallel_test_suite.process_setup_args = process_setup_args
+    TestRunner.parallel_iso_test_suit.process_setup = setup_run_tests
+    TestRunner.parallel_iso_test_suit.process_setup_args = process_setup_args
     test_runner = TestRunner(
         verbosity=verbosity,
         interactive=interactive,
